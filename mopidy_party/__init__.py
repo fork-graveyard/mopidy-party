@@ -1,8 +1,9 @@
 import os
 
+import pykka
 import tornado.web
 
-from mopidy import config, ext
+from mopidy import core, config, ext
 
 __version__ = '1.0.0'
 
@@ -34,7 +35,22 @@ class PartyRequestHandler(tornado.web.RequestHandler):
             else:
                 self.write("You have voted to skip this song. ("+str(self.requiredVotes-len(self.data["votes"]))+" more votes needed)")
 
+class PartyFrontend(pykka.ThreadingActor, core.CoreListener):
+    def __init__(self, config, core):
+        super().__init__()
+        self.core = core
+        self.index = 0
+        if config["party"]["fallback_playlist"] != "-":
+            self.playlist = self.core.playlists.lookup(config["party"]["fallback_playlist"]).get()
+        else:
+            self.playlist = None
+            # logger.info("no fallback playlist selected; available are", [dict(name=p.name, uri=p.uri) for p in self.core.playlists.as_list().get()])
 
+    def playback_state_changed(self, old_state, new_state):
+        if new_state == "stopped" and self.playlist: # ran out of items to play
+            self.core.tracklist.add([self.playlist.tracks[self.index]])
+            self.index = (self.index + 1) % self.playlist.length
+            self.core.playback.play()
 
 def party_factory(config, core):
     data = {'track':"", 'votes':[]}
@@ -56,6 +72,7 @@ class Extension(ext.Extension):
     def get_config_schema(self):
         schema = super(Extension, self).get_config_schema()
         schema['votes_to_skip'] = config.Integer(minimum=0)
+        schema['fallback_playlist'] = config.String(optional=True)
         return schema
 
     def setup(self, registry):
@@ -67,3 +84,4 @@ class Extension(ext.Extension):
             'name': self.ext_name,
             'factory': party_factory,
         })
+        registry.add('frontend', PartyFrontend)
